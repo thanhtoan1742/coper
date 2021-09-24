@@ -1,19 +1,22 @@
 'use strict';
 
+const Store = require("electron-store");
+
 function rand(n) {
     return Math.floor(Math.random()*n);
 }
 
 class Card {
-    constructor(container, content="content") {
-        this.content = content;
+    constructor(container, id, content="content", copiedCounter=0) {
         this.container = container;
-        this.id = this.container.idCounter++;
-        this.copied_counter = 0;
+        this.id = id;
+        this.name = "card" + this.id;
+        this.content = content;
+        this.copiedCounter = copiedCounter;
 
         this.node = document.createElement("li");
         this.node.className = "card";
-        this.node.id = "card-" + this.id.toString();
+        this.node.id = this.name;
         
         this.contentNode = this.createContentNode(true);
         this.node.appendChild(this.contentNode);
@@ -31,6 +34,8 @@ class Card {
             cardCollection.removeCard(this.id);
         };
         this.node.appendChild(this.deleteButton);
+
+        this.save();
     }
 
     createContentNode(isNormal=true) {
@@ -69,7 +74,8 @@ class Card {
     createInformationNode() {
         const node = document.createElement("div");
         node.className = "information";
-        node.innerText = "never used";
+        node.innerHTML = `copied ${this.copiedCounter} time` 
+                        + (this.copiedCounter > 1 ? "s" : "");
         node.onclick = this.copy.bind(this);
 
         return node;
@@ -80,10 +86,12 @@ class Card {
             () => {
                 console.log(this.content);
                 console.log("copied");
-                this.copied_counter++;
-                this.informationNode.innerHTML = `copied ${this.copied_counter} time` 
-                                                + (this.copied_counter > 1 ? "s" : "");
+                this.copiedCounter++;
+                this.informationNode.innerHTML = `copied ${this.copiedCounter} time` 
+                                                + (this.copiedCounter > 1 ? "s" : "");
                 this.container.addCopiedCounter(1);
+
+                this.save();
             },
             () => {console.log("copy error");}
         );
@@ -99,6 +107,8 @@ class Card {
         const applyButton = this.createEditApplyButton(false);
         this.editApplyButton.replaceWith(applyButton);
         this.editApplyButton = applyButton;
+
+        this.contentNode.focus();
     }
 
     changeToNormalMode() {
@@ -110,39 +120,80 @@ class Card {
         const editButton = this.createEditApplyButton(true);
         this.editApplyButton.replaceWith(editButton);
         this.editApplyButton = editButton;
+
+        this.save();
+    }
+
+    save() {
+        this.container.store.set(this.name, this.toJson());
+    }
+
+    toJson() {
+        return {
+            "id": this.id,
+            "copiedCounter": this.copiedCounter,
+            "content": this.content,
+        };
     }
 }
 
 class CardCollection {
     constructor() {
-        this.placeholderCard = new Card(this, "placeholder");
-
-        this.cards = [];
-        this.idCounter = 0;
-        this.deletedCards = [];
-        this.idNotSelected = [];
-        this.copiedCounter = 0;
+        this.store = new Store({name: "coper"});
+        this.placeholderCard = new Card(this, -1);
+        this.idCounter = this.store.get("idCounter", 0);
 
         this.node = document.createElement("ul");
         this.node.className = "card-container";
 
+        this.copiedCounter = this.store.get("totalCopiedCounter", 0);
         this.copiedCounterNode = document.createElement("li");
         this.copiedCounterNode.id = "total-copied-counter";
-        this.copiedCounterNode.innerHTML = "copied 0 time totally";
-
         this.node.appendChild(this.copiedCounterNode);
+        this.copiedCounterNode.innerHTML = "copied ??? time totally";
+
+        this.idNotSelected = [];
+        this.cards = [];
+        this.deletedCards = [];
+        this.loadCardArray("cards", this.addCard.bind(this));
+        this.loadCardArray("deletedCards", this.addDeletedCard.bind(this));
+
+        this.addCopiedCounter(0);
     }
 
-    addCard(content) {
-        if (!content)
-            content = this.idCounter.toString();
+    loadCardArray(arrayName, addCallback) {
+        const cardNames = this.store.get(arrayName, []);
+        for (let name of cardNames) {
+            const cardJson = this.store.get(name, undefined);
+            if (!cardJson)
+                continue;
 
-        const card = new Card(this, content);
+            const card = new Card(this, cardJson.id, cardJson.content, cardJson.copiedCounter);
+            addCallback(card);
+        }
+    }
+
+    addCard(card) {
         this.cards.push(card);
         this.idNotSelected.push(card.id);
 
         this.node.lastChild.replaceWith(card.node);
         this.node.appendChild(this.copiedCounterNode);
+
+        this.save();
+    }
+
+    addDeletedCard(card) {
+        this.deletedCards.push(card);
+        this.save();
+    }
+
+    addCardWithContent(content) {
+        if (!content)
+            content = this.idCounter.toString();
+
+        const card = new Card(this, this.idCounter++, content);
+        this.addCard(card);
     }
 
     getCard(index = -1) {
@@ -185,6 +236,8 @@ class CardCollection {
         this.node.removeChild(this.cards[index].node);
         this.deletedCards.push(this.cards[index]);
         this.cards.splice(index, 1);
+
+        this.save();
     }
 
     addCopiedCounter(n) {
@@ -192,6 +245,22 @@ class CardCollection {
         this.copiedCounterNode.innerHTML = `copied ${this.copiedCounter} time`
                                         + (this.copiedCounter > 1 ? "s " : " ")
                                         + "totally";
+        this.save();
+    }
+
+    save() {
+        this.store.set("idCounter", this.idCounter);
+        this.store.set("totalCopiedCounter", this.copiedCounter);
+        
+        let names = []
+        for (let card of this.cards)
+            names.push(card.name);
+        this.store.set("cards", names);
+
+        names = []
+        for (let card of this.deletedCards)
+            names.push(card.name);
+        this.store.set("deletedCards", names);
     }
 
 }
@@ -202,7 +271,7 @@ window.addEventListener('DOMContentLoaded', () => {
     document.body.appendChild(cardCollection.node);
 
     document.querySelector("#add-card").onclick = () => {
-        cardCollection.addCard("add your content here");
+        cardCollection.addCardWithContent("add your content here");
     };
     document.querySelector("#copy-random-card-content").onclick = () => {cardCollection.getCard(-1).copy()};
 });
